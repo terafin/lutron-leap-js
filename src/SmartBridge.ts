@@ -12,6 +12,7 @@ import {
     ExceptionDetail,
     Href,
     MultipleDeviceDefinition,
+    MultipleControlStationDefinition,
     OneButtonDefinition,
     OneButtonGroupDefinition,
     OneDeviceDefinition,
@@ -70,7 +71,7 @@ export class SmartBridge extends (EventEmitter as new () => TypedEmitter<SmartBr
                 await this.client.connect();
                 logDebug('Connected');
             },
-            { retries: CONNECT_MAX_RETRY, factor: 1 }
+            { retries: CONNECT_MAX_RETRY, factor: 1 },
         );
         // Send disconnect signal for re-subscribing
         this.emit('disconnected');
@@ -140,9 +141,24 @@ export class SmartBridge extends (EventEmitter as new () => TypedEmitter<SmartBr
 
     public async getBridgeInfo(): Promise<BridgeInfo> {
         logDebug('getting bridge information');
-        const raw = await this.client.request('ReadRequest', '/device/1');
-        if ((raw.Body! as OneDeviceDefinition).Device) {
-            const device = (raw.Body! as OneDeviceDefinition).Device;
+        const raw = await this.client.request('ReadRequest', '/device?where=IsThisDevice:true');
+        if (
+            (raw.Body! as MultipleDeviceDefinition).Devices &&
+            (raw.Body! as MultipleDeviceDefinition).Devices.length > 0
+        ) {
+            const device = (raw.Body! as MultipleDeviceDefinition).Devices[0];
+            return {
+                firmwareRevision: device.FirmwareImage.Firmware.DisplayName,
+                manufacturer: 'Lutron Electronics Co., Inc',
+                model: device.ModelNumber,
+                name: device.FullyQualifiedName?.join(' ') || device.Name,
+                serialNumber: device.SerialNumber,
+            };
+        }
+        // Fallback to old method for backwards compatibility
+        const rawFallback = await this.client.request('ReadRequest', '/device/1');
+        if ((rawFallback.Body! as OneDeviceDefinition).Device) {
+            const device = (rawFallback.Body! as OneDeviceDefinition).Device;
             return {
                 firmwareRevision: device.FirmwareImage.Firmware.DisplayName,
                 manufacturer: 'Lutron Electronics Co., Inc',
@@ -156,12 +172,38 @@ export class SmartBridge extends (EventEmitter as new () => TypedEmitter<SmartBr
 
     public async getDeviceInfo(): Promise<DeviceDefinition[]> {
         logDebug('getting info about all devices');
-        const raw = await this.client.request('ReadRequest', '/device');
-        if ((raw.Body! as MultipleDeviceDefinition).Devices) {
-            const devices = (raw.Body! as MultipleDeviceDefinition).Devices;
-            return devices;
+
+        // 1. Try standard /device list
+        let standardDevices: DeviceDefinition[] = [];
+        try {
+            const raw = await this.client.request('ReadRequest', '/device');
+
+            // Check if we got a 204 NoContent response (common with QSX)
+            if (raw.Header.StatusCode?.code === 204) {
+                logDebug('Got 204 NoContent, device list is empty or not supported on this processor');
+            } else if ((raw.Body! as MultipleDeviceDefinition).Devices) {
+                standardDevices = (raw.Body! as MultipleDeviceDefinition).Devices;
+            }
+        } catch (e) {
+            logDebug('Standard /device request failed or returned empty. Proceeding to QSX check.');
         }
-        throw new Error('got bad response to all device list request');
+
+        // 2. Map for Deduplication
+        const deviceMap = new Map<string, DeviceDefinition>();
+        for (const d of standardDevices) {
+            deviceMap.set(d.href, d);
+        }
+
+        // 3. QSX Check
+        // If the list is empty or small, we assume it's QSX (or a fresh bridge) and crawl.
+        if (standardDevices.length <= 5) {
+            const qsxDevices = await this.discoverQSXDevices();
+            for (const d of qsxDevices) {
+                deviceMap.set(d.href, d);
+            }
+        }
+
+        return Array.from(deviceMap.values());
     }
 
     public async setBlindsTilt(device: DeviceDefinition, value: number): Promise<void> {
@@ -190,6 +232,12 @@ export class SmartBridge extends (EventEmitter as new () => TypedEmitter<SmartBr
     public async getButtonGroupsFromDevice(
         device: DeviceDefinition,
     ): Promise<(ButtonGroupDefinition | ExceptionDetail)[]> {
+        // If ButtonGroups is missing (common on QSX crawled devices),
+        // return an empty list immediately to prevent the .map() crash.
+        if (!device.ButtonGroups) {
+            return Promise.resolve([]);
+        }
+
         return Promise.all(
             device.ButtonGroups.map((bgHref: Href) =>
                 this.client.request('ReadRequest', bgHref.href).then((resp: Response) => {
@@ -248,5 +296,103 @@ export class SmartBridge extends (EventEmitter as new () => TypedEmitter<SmartBr
         // nothing to do here
         logDebug('bridge id', this.bridgeID, 'disconnected.');
         this.emit('disconnected');
+    }
+
+    /**
+     * QSX Helper: Crawl areas to find devices hidden from the main /device endpoint.
+     */
+    private async discoverQSXDevices(): Promise<DeviceDefinition[]> {
+        logDebug('QSX detected: Starting Area crawl for device discovery...');
+        const foundDevices: DeviceDefinition[] = [];
+
+        // 1. Get all Areas
+        let areas: any[] = [];
+        try {
+            // @ts-ignore
+            const areaRaw = await this.client.request('ReadRequest', '/area');
+            // @ts-ignore
+            areas = areaRaw.Body.Areas || [];
+        } catch (e) {
+            return [];
+        }
+
+        // 2. Scan each area
+        const stationPromises = areas.map(async (area) => {
+            if (!area.href) return;
+
+            try {
+                const url = `${area.href}/associatedcontrolstation`;
+                // @ts-ignore
+                const response = await this.client.request('ReadRequest', url);
+                const body = response.Body as MultipleControlStationDefinition;
+
+                if (body && body.ControlStations) {
+                    for (const station of body.ControlStations) {
+                        if (station.AssociatedGangedDevices) {
+                            for (const gang of station.AssociatedGangedDevices) {
+                                // @ts-ignore
+                                const device = gang.Device || gang;
+
+                                if (device && device.href) {
+                                    // Build the name from area/station FIRST (before fetching full details)
+                                    const areaName = (area as any).Name || 'Area';
+                                    const stationName = station.Name || 'Station';
+                                    const partialDeviceName = device.Name || stationName;
+                                    const builtName = [areaName, partialDeviceName];
+
+                                    // For devices that might have zones/buttons, fetch full details
+                                    // to avoid overwriting important fields
+                                    const needsFullDetails =
+                                        device.DeviceType === 'PlugInDimmer' ||
+                                        device.DeviceType === 'WallDimmer' ||
+                                        device.DeviceType === 'PlugInSwitch';
+
+                                    let fullDevice = device;
+                                    if (needsFullDetails) {
+                                        try {
+                                            const resp = await this.client.request('ReadRequest', device.href);
+                                            if (resp.Body && (resp.Body as OneDeviceDefinition).Device) {
+                                                fullDevice = (resp.Body as OneDeviceDefinition).Device;
+                                            }
+                                        } catch (e) {
+                                            // If fetch fails, continue with partial device
+                                            logDebug(`Failed to fetch full device details for ${device.href}`);
+                                        }
+                                    }
+
+                                    // Always use the area-based name we built, not the generic device name
+                                    fullDevice.FullyQualifiedName = builtName;
+
+                                    if (!fullDevice.SerialNumber) {
+                                        fullDevice.SerialNumber = fullDevice.href.split('/').pop() || '000000';
+                                    }
+                                    if (!fullDevice.ModelNumber) {
+                                        fullDevice.ModelNumber = fullDevice.DeviceType || 'QSX Device';
+                                    }
+
+                                    // We force these to be arrays if they are missing
+                                    if (!fullDevice.ButtonGroups) fullDevice.ButtonGroups = [];
+                                    if (!fullDevice.LocalZones) fullDevice.LocalZones = [];
+                                    if (!fullDevice.OccupancySensors) fullDevice.OccupancySensors = [];
+                                    if (!fullDevice.LinkNodes) fullDevice.LinkNodes = [];
+                                    if (!fullDevice.DeviceRules) fullDevice.DeviceRules = [];
+
+                                    if (!fullDevice.AssociatedArea) {
+                                        fullDevice.AssociatedArea = { href: area.href };
+                                    }
+
+                                    foundDevices.push(fullDevice as DeviceDefinition);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                // Ignore errors
+            }
+        });
+
+        await Promise.all(stationPromises);
+        return foundDevices;
     }
 }

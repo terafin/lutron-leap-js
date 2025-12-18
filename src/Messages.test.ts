@@ -270,3 +270,42 @@ test('UndefinedPresetThings', () => {
     expect(body.Preset.FanSpeedAssignments).toBeUndefined();
     expect(body.Preset.PresetAssignments.length).toEqual(1);
 });
+
+test('QSX OneProjectDefinition', () => {
+    const line =
+        '{"CommuniqueType":"ReadResponse","Header":{"MessageBodyType":"OneProjectDefinition","StatusCode":"200 OK","Url":"/project"},"Body":{"Project":{"href":"/project","Name":"Smith, John - My Home","ProductType":"Lutron HWQS Project","MasterDeviceList":{"Devices":[{"href":"/device/2175"}]},"Contacts":[{"href":"/contactinfo/89"}],"TimeclockEventRules":{"href":"/project/timeclockeventrules"},"ProjectModifiedTimestamp":{"Year":2025,"Month":12,"Day":3,"Hour":6,"Minute":10,"Second":47,"Utc":"0"}}}}';
+
+    const response: Response = Response.fromJSON(JSON.parse(line));
+    expect(response?.Header.StatusCode?.code).toEqual(200);
+    expect(response?.CommuniqueType).toEqual('ReadResponse');
+    // @ts-ignore
+    expect(response.Body.Project.ProductType).toEqual('Lutron HWQS Project');
+    // @ts-ignore
+    expect(response.Body.Project.Name).toEqual('Smith, John - My Home');
+});
+
+test('QSX HWQSProcessor Device', () => {
+    const line =
+        '{"CommuniqueType":"ReadResponse","Header":{"MessageBodyType":"OneDeviceDefinition","StatusCode":"200 OK","Url":"/device/2175"},"Body":{"Device":{"Name":"Enclosure Device 002","DeviceType":"HWQSProcessor","AssociatedArea":{"href":"/area/741"},"href":"/device/2175","SerialNumber":91708442,"Parent":{"href":"/project"},"ModelNumber":"HQP7-2","FirmwareImage":{"Firmware":{"DisplayName":"25.09.16f000"},"Installed":{"Year":2025,"Month":12,"Day":4,"Hour":2,"Minute":11,"Second":23,"Utc":"-8:00:00"}},"AddressedState":"Addressed","IsThisDevice":true}}}';
+
+    const response: Response = Response.fromJSON(JSON.parse(line));
+    expect(response?.Header.StatusCode?.code).toEqual(200);
+    // @ts-ignore
+    expect(response.Body.Device.DeviceType).toEqual('HWQSProcessor');
+    // @ts-ignore
+    expect(response.Body.Device.ModelNumber).toEqual('HQP7-2');
+    // @ts-ignore
+    expect(response.Body.Device.IsThisDevice).toEqual(true);
+});
+
+test('QSX PalladiomKeypad Device', () => {
+    const line =
+        '{"CommuniqueType":"ReadResponse","Header":{"MessageBodyType":"OneDeviceDefinition","StatusCode":"200 OK","Url":"/device/2670"},"Body":{"Device":{"Name":"Bottom of Stairs","DeviceType":"PalladiomKeypad","AssociatedArea":{"href":"/area/729"},"href":"/device/2670","SerialNumber":53987004,"Parent":{"href":"/project"},"ModelNumber":"HQWT-U-P4W","FirmwareImage":{"href":"/firmwareimage/2670","Device":{"href":"/device/2670"}},"AddressedState":"Addressed","AssociatedLink":{"href":"/link/2370"}}}}';
+
+    const response: Response = Response.fromJSON(JSON.parse(line));
+    expect(response?.Header.StatusCode?.code).toEqual(200);
+    // @ts-ignore
+    expect(response.Body.Device.DeviceType).toEqual('PalladiomKeypad');
+    // @ts-ignore
+    expect(response.Body.Device.ModelNumber).toEqual('HQWT-U-P4W');
+});

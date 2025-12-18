@@ -61,7 +61,7 @@ The SmartBridge class abstractions for relevant operations like subscribing to k
 
 ## Real-world testing
 
-This library has been extensively tested on Caseta Smart Bridge 2 (pro and non-pro) devices, and gracious contributors have tested it with RA3. If you have used it elsewhere, please drop a note and let me know. So far, this library has been tested with:
+This library has been extensively tested on Caseta Smart Bridge 2 (pro and non-pro) devices, and gracious contributors have tested it with RA3 and QSX processors. If you have used it elsewhere, please drop a note and let me know. So far, this library has been tested with:
 
 * Caseta Smart Bridge 2
 * Caseta Smart Bridge 2 Pro
@@ -69,6 +69,8 @@ This library has been extensively tested on Caseta Smart Bridge 2 (pro and non-p
 * Caseta occupancy sensor
 * Serena wood blinds
 * RA3 processor
+* QSX processor (HQP7-2)
+* Palladiom Keypad
 * Sunnata Dimmer
 * Sunnata switch
 * RA3 wall motion sensor
